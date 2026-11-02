@@ -505,7 +505,15 @@ function chunkClips(w,c){
 const letterClip=l=>l==="q"?"qu":l;
 const rimeClips=r=>r.split("").map(letterClip);
 let clipBuf={},audioQ=0,curSrc=null;
-function unlockAudio(){try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();if(actx.state==="suspended")actx.resume()}catch(e){}}
+/* recordings play through an <audio> element: on iPhone it still plays when the ring/silent switch is on silent, Web Audio does not */
+const SILENT="data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYwLjE2LjEwMAAAAAAAAAAAAAAA//NwwAAAAAAAAAAAAEluZm8AAAAPAAAABgAAAykAWlpaWlpaWlpaWlpaWlpaWnt7e3t7e3t7e3t7e3t7e3t7nJycnJycnJycnJycnJycnL29vb29vb29vb29vb29vb293t7e3t7e3t7e3t7e3t7e3t7/////////////////////AAAAAExhdmM2MC4zMQAAAAAAAAAAAAAAACQEUQAAAAAAAAMpso/G6AAAAAAAAAAAAAAAAAD/80DEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQsRbAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQMSkAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NCxKMAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NAxKQAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/80LEowAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU=";
+const AUD=new Audio();AUD.preload="auto";try{AUD.setAttribute("playsinline","");AUD.setAttribute("webkit-playsinline","")}catch(e){}
+let audUnlocked=false;
+function unlockAudio(){
+  try{if(navigator.audioSession)navigator.audioSession.type="playback"}catch(e){}
+  try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();if(actx.state==="suspended")actx.resume()}catch(e){}
+  if(!audUnlocked){audUnlocked=true;try{AUD.src=SILENT;const pr=AUD.play();if(pr&&pr.catch)pr.catch(()=>{audUnlocked=false})}catch(e){audUnlocked=false}}
+}
 function clipBuffer(k){
   if(clipBuf[k])return clipBuf[k];
   const b=atob(CLIPS[k].split(",")[1]),a=new Uint8Array(b.length);for(let i=0;i<b.length;i++)a[i]=b.charCodeAt(i);
@@ -513,13 +521,15 @@ function clipBuffer(k){
 }
 /* items: {clip:key,gap?} or {tts:text,rate?,lang?}; a new call stops whatever is playing */
 function playQueue(items){
-  const id=++audioQ;try{speechSynthesis.cancel()}catch(e){}try{curSrc&&curSrc.stop()}catch(e){}
+  const id=++audioQ;try{speechSynthesis.cancel()}catch(e){}try{AUD.onended=null;AUD.pause()}catch(e){}
   unlockAudio();
   const step=async i=>{
     if(id!==audioQ||i>=items.length)return;const it=items[i];
-    if(it.clip&&CLIPS[it.clip]&&actx){
-      try{const buf=await clipBuffer(it.clip);if(id!==audioQ)return;const src=actx.createBufferSource();src.buffer=buf;src.connect(actx.destination);curSrc=src;
-        src.onended=()=>setTimeout(()=>step(i+1),it.gap===undefined?160:it.gap);src.start()}catch(e){step(i+1)}
+    if(it.clip&&CLIPS[it.clip]){
+      let done=false;const gap=it.gap===undefined?160:it.gap;
+      const nx=()=>{if(done)return;done=true;clearTimeout(guard);AUD.onended=null;if(id===audioQ)setTimeout(()=>step(i+1),gap)};
+      const guard=setTimeout(nx,2500);
+      try{AUD.onended=nx;AUD.src=CLIPS[it.clip];try{AUD.currentTime=0}catch(e){}const pr=AUD.play();if(pr&&pr.catch)pr.catch(nx)}catch(e){nx()}
     }else if(it.tts&&hasTTS){
       try{const u=new SpeechSynthesisUtterance(it.tts);u.lang=it.lang||"en-US";u.rate=it.rate||0.6;const v=pickVoice(u.lang);if(v)u.voice=v;
         let done=false;const nx=()=>{if(!done){done=true;setTimeout(()=>step(i+1),100)}};u.onend=u.onerror=nx;speechSynthesis.speak(u)}catch(e){step(i+1)}
@@ -965,7 +975,7 @@ function padBlob(){
   return new Blob([a],{type:"image/png"});
 }
 let lastView="";
-function stopAudio(){audioQ++;try{speechSynthesis.cancel()}catch(e){}try{curSrc&&curSrc.stop()}catch(e){}curSrc=null}
+function stopAudio(){audioQ++;try{speechSynthesis.cancel()}catch(e){}try{AUD.onended=null;AUD.pause()}catch(e){}}
 function render(){
   if(view.name!==lastView){stopAudio();lastView=view.name}
   const fn=V[view.name]||V.home;app.innerHTML=fn();window.scrollTo(0,0);
