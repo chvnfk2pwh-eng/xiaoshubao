@@ -136,6 +136,25 @@ b.vw{font-weight:inherit}
 .wchip{flex:none;font-family:var(--f-round);font-size:18px;font-weight:600;padding:8px 14px;min-height:44px;border-radius:22px;border:2px solid var(--line);background:var(--paper);color:var(--ink)}
 .wchip.seen{border-color:var(--good)}
 .wchip.cur{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.recbox{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center}
+.recbtn{display:inline-flex;align-items:center;gap:10px;min-height:52px;padding:8px 20px;border-radius:26px;border:2px solid var(--bad);background:var(--paper);color:var(--bad);font-size:18px;font-weight:700}
+.recbtn .dot{width:14px;height:14px;border-radius:50%;background:var(--bad)}
+.recbtn.on{background:var(--bad);color:var(--paper)}
+.recbtn.on .dot{background:var(--paper);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.3}}
+.recres{font-size:20px;font-weight:700;text-align:center}
+.recres.good{color:var(--good)}.recres.mid{color:var(--accent)}.recres.low{color:var(--bad)}
+.wok{color:var(--good)}
+.wmid{color:var(--accent)}
+.xfres{display:flex;flex-direction:column;align-items:center;gap:4px}
+.xfscore{font-family:var(--f-round);font-size:52px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.xfscore small{font-size:20px;margin-left:2px}
+.xfscore.good{color:var(--good)}.xfscore.mid{color:var(--accent)}.xfscore.low{color:var(--bad)}
+.big-stars.sm{font-size:28px}
+.xfdims{display:flex;gap:14px;font-size:15px;color:var(--muted)}
+.xfdims b{color:var(--ink);font-variant-numeric:tabular-nums}
+.tin{width:100%;min-height:48px;border-radius:12px;border:2px solid var(--line);background:var(--paper);color:var(--ink);padding:8px 12px;font:16px var(--f-body)}
+.wbad{color:var(--bad);text-decoration:underline wavy;text-decoration-thickness:2px;text-underline-offset:6px}
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px;color:var(--muted);justify-content:center}
 .legend span{display:inline-flex;align-items:center;gap:4px}
 .seg.dotc{font-size:15px;padding:0 5px;border-width:1.5px;border-radius:6px;font-style:normal;min-width:0}
@@ -538,6 +557,178 @@ function playQueue(items){
   step(0);
 }
 
+
+/* ---------- read-aloud recording + check (sentence follow-reading) ---------- */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+const canRec=()=>!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder);
+const CONTR={"i'm":"i am","it's":"it is","let's":"let us","what's":"what is","that's":"that is","you're":"you are","don't":"do not","here's":"here is",lets:"let us",im:"i am",whats:"what is",thats:"that is",heres:"here is"};
+function normWords(t){
+  t=String(t).toLowerCase().replace(/[’‘]/g,"'");
+  return t.split(/\s+/).flatMap(w=>{w=w.replace(/^[^a-z']+|[^a-z']+$/g,"");if(!w)return[];return (CONTR[w]||w).split(" ")});
+}
+const isName=w=>Object.keys(NAMES).some(n=>n.toLowerCase()===w);
+function lev(a,b){const d=Array.from({length:a.length+1},(_,i)=>[i]);for(let j=1;j<=b.length;j++)d[0][j]=j;
+  for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return d[a.length][b.length]}
+const near=(a,b)=>a===b||(a.length>=4&&lev(a,b)<=1);
+/* align target words with what was heard (longest common subsequence, lenient on spelling) */
+function grade(target,heardList){
+  const tw=target.split(/\s+/).filter(Boolean);
+  let best=null;
+  for(const heard of heardList.length?heardList:[""]){
+    const tset=new Set(normWords(target));const h0=normWords(heard),h=[];
+    for(let j=0;j<h0.length;j++){if(j+1<h0.length&&!tset.has(h0[j])&&tset.has(h0[j]+h0[j+1])){h.push(h0[j]+h0[j+1]);j++}else h.push(h0[j])}
+    const marks=tw.map(w=>{const n=normWords(w);return {w,n,ok:false}});
+    const flat=[];marks.forEach((m,mi)=>m.n.forEach(x=>flat.push({x,mi})));
+    const L=Array.from({length:flat.length+1},()=>new Array(h.length+1).fill(0));
+    for(let i=flat.length-1;i>=0;i--)for(let j=h.length-1;j>=0;j--)L[i][j]=near(flat[i].x,h[j])?L[i+1][j+1]+1:Math.max(L[i+1][j],L[i][j+1]);
+    const hit=new Set();let i=0,j=0;while(i<flat.length&&j<h.length){if(near(flat[i].x,h[j])){hit.add(i);i++;j++}else if(L[i+1][j]>=L[i][j+1])i++;else j++}
+    marks.forEach((m,mi)=>{const idx=flat.map((f,k)=>f.mi===mi?k:-1).filter(k=>k>=0);m.ok=isName(m.n.join(""))||(idx.length>0&&idx.every(k=>hit.has(k)))});
+    const score=marks.filter(m=>m.ok).length/marks.length;
+    if(!best||score>best.score)best={marks,score,heard};
+  }
+  return best;
+}
+let recState=null;
+async function startRec(){
+  if(xfReady()&&window.AudioContext||xfReady()&&window.webkitAudioContext){unlockAudio();if(actx&&canRec())return startRecXf()}
+  const q=quiz,it=q.items[q.i];stopAudio();
+  if(!canRec()){q.rec={status:"err",msg:"这个浏览器不能录音。请用手机自带的 Safari 打开网址再试。"};render();return}
+  let stream;
+  try{stream=await navigator.mediaDevices.getUserMedia({audio:true})}
+  catch(e){q.rec={status:"err",msg:inClaude?"在 Claude 里打开时不能录音，请用手机 Safari 打开 GitHub 上的网址使用。":"没有拿到麦克风权限。请在弹窗里点「允许」，或者到手机设置里允许这个浏览器使用麦克风。"};render();return}
+  const chunks=[];let mr;
+  try{mr=new MediaRecorder(stream)}catch(e){stream.getTracks().forEach(t=>t.stop());q.rec={status:"err",msg:"这个浏览器不能录音。"};render();return}
+  const st={q,idx:q.i,mr,stream,heard:[],srDone:!SR,mrDone:false,sr:null,timer:0};recState=st;
+  mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
+  mr.onstop=()=>{stream.getTracks().forEach(t=>t.stop());st.url=chunks.length?URL.createObjectURL(new Blob(chunks,{type:mr.mimeType||"audio/mp4"})):"";st.mrDone=true;finishRec(st)};
+  if(SR){try{const r=new SR();st.sr=r;r.lang="en-US";r.interimResults=false;r.maxAlternatives=3;r.continuous=false;
+    r.onresult=e=>{for(const res of e.results)for(let k=0;k<res.length;k++)st.heard.push(res[k].transcript)};
+    r.onerror=()=>{};r.onend=()=>{st.srDone=true;if(mr.state==="recording")setTimeout(()=>{try{mr.state==="recording"&&mr.stop()}catch(e){}},300);finishRec(st)};
+    r.start()}catch(e){st.srDone=true}}
+  mr.start();
+  const words=String(it[0]).split(/\s+/).length;
+  st.timer=setTimeout(()=>stopRec(),Math.min(12000,2500+words*900));
+  q.rec={status:"rec"};render();
+}
+function stopRec(){const st=recState;if(!st)return;if(st.xf)return stopRecXf(st);clearTimeout(st.timer);
+  try{st.sr&&st.sr.stop()}catch(e){}try{st.mr.state==="recording"&&st.mr.stop()}catch(e){}
+  setTimeout(()=>{if(!st.srDone){st.srDone=true;finishRec(st)}},2500)}
+function finishRec(st){
+  if(!st.mrDone||!st.srDone||st.finished)return;st.finished=true;if(recState===st)recState=null;
+  const q=st.q;if(quiz!==q||q.i!==st.idx||view.name!=="quiz")return;
+  const it=q.items[q.i];
+  if(SR&&st.heard.length){const g=grade(it[0],st.heard);q.rec={status:"done",url:st.url,g};chime(g.score>=0.8)}
+  else q.rec={status:"done",url:st.url,g:null,msg:SR?"没听清楚，靠近一点、大声一点再试一次。":"这台设备只能录音，不能自动判断。听一听自己读得像不像吧。"};
+  render();
+}
+function recHTML(q,it){
+  const r=q.rec||{status:"idle"};
+  if(!canRec()&&!r.msg)return `<p class="small muted" style="margin:0;text-align:center">用手机 Safari 打开网址，可以录下自己的读音。</p>`;
+  let h=`<div class="recbox">`;
+  if(r.status==="rec")h+=`<button class="recbtn on" data-act="recstop"><span class="dot"></span>正在听…读完点这里</button>`;
+  else if(r.status==="scoring")h+=`<button class="recbtn" disabled><span class="dot"></span>讯飞正在打分…</button>`;
+  else h+=`<button class="recbtn" data-act="recstart"><span class="dot"></span>${r.status==="done"?"再录一次":"我来读"}</button>`;
+  if((r.status==="done"||r.status==="scoring")&&r.url)h+=`<button class="say" data-act="recplay">${SPK}听我的</button>`;
+  h+=`</div>`;
+  if(r.status==="done"&&r.xf){const x=r.xf,t=x.total||0,stars=t>=85?3:t>=65?2:t>=40?1:0;
+    h+=`<div class="xfres"><div class="xfscore ${t>=80?"good":t>=60?"mid":"low"}">${t}<small>分</small></div><div class="big-stars sm">${"★".repeat(stars)}<span style="opacity:.25">${"★".repeat(3-stars)}</span></div>
+      <div class="xfdims">${[["准确",x.acc],["流利",x.flu],["完整",x.integ]].filter(d=>d[1]!==null).map(d=>`<span>${d[0]} <b>${d[1]}</b></span>`).join("")}</div>
+      <div class="recres ${t>=80?"good":t>=60?"mid":"low"}">${t>=80?"读得真好！":t>=60?"不错，红色和橙色的词再练练":"跟着原音再慢慢读一遍"}</div></div>`}
+  if(r.status==="done"&&r.g){const pct=Math.round(r.g.score*100);
+    h+=`<div class="recres ${r.g.score>=0.8?"good":r.g.score>=0.5?"mid":"low"}">${r.g.score>=0.8?"读得真好！":r.g.score>=0.5?"差一点，红色的词再读清楚些":"再试一次，跟着原音慢慢读"}</div>
+      <p class="small muted" style="margin:0;text-align:center">机器听到的是：${esc(r.g.heard||"")}</p>`}
+  if(r.msg)h+=`<p class="small" style="margin:0;text-align:center;color:var(--accent)">${esc(r.msg)}</p>`;
+  return h;
+}
+const sentHTML=(q,it)=>{const r=q.rec;
+  if(r&&r.status==="done"&&r.xf&&r.xf.words.length)return r.xf.words.map(w=>`<span class="${w.dp===16||w.score<60?"wbad":w.score<80?"wmid":"wok"}" title="${w.score}">${esc(w.w)}</span>`).join(" ");
+  if(r&&r.status==="done"&&r.g)return r.g.marks.map(m=>`<span class="${m.ok?"wok":"wbad"}">${esc(m.w)}</span>`).join(" ");return esc(it[0])};
+
+
+/* ---------- iFlytek (讯飞) pronunciation scoring: keys live only in this device's browser ---------- */
+let xfCfg=(()=>{try{return JSON.parse(localStorage.getItem("xsb-xf"))||{appid:"",key:"",secret:""}}catch(e){return {appid:"",key:"",secret:""}}})();
+const xfReady=()=>!inClaude&&xfCfg.appid&&xfCfg.key&&xfCfg.secret&&window.crypto&&crypto.subtle&&window.WebSocket;
+async function xfUrl(){
+  const host="ise-api.xfyun.cn",path="/v2/open-ise",date=new Date().toUTCString();
+  const origin=`host: ${host}\ndate: ${date}\nGET ${path} HTTP/1.1`;
+  const k=await crypto.subtle.importKey("raw",new TextEncoder().encode(xfCfg.secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+  const sig=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC",k,new TextEncoder().encode(origin)))));
+  const auth=btoa(`api_key="${xfCfg.key}", algorithm="hmac-sha256", headers="host date request-line", signature="${sig}"`);
+  return `wss://${host}${path}?authorization=${encodeURIComponent(auth)}&date=${encodeURIComponent(date)}&host=${host}`;
+}
+function b64bytes(u8){let s="";for(let i=0;i<u8.length;i+=0x8000)s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));return btoa(s)}
+function xfScore(sentence,pcm){
+  return new Promise(async(resolve,reject)=>{
+    let ws,done=false;const fail=m=>{if(done)return;done=true;try{ws&&ws.close()}catch(e){}reject(new Error(m))};
+    const timer=setTimeout(()=>fail("讯飞那边太久没有回应，请检查网络后再试。"),20000);
+    try{ws=new WebSocket(await xfUrl())}catch(e){clearTimeout(timer);return fail("连不上讯飞，请检查设置里的钥匙。")}
+    ws.onerror=()=>fail("连不上讯飞。请检查网络，以及设置里的 APIKey、APISecret 是否填对。");
+    ws.onopen=async()=>{
+      ws.send(JSON.stringify({common:{app_id:xfCfg.appid},business:{sub:"ise",ent:"en_vip",category:"read_sentence",cmd:"ssb",
+        text:"﻿[content]\n"+sentence,tte:"utf-8",ttp_skip:true,aue:"raw",auf:"audio/L16;rate=16000",rstcd:"utf8",rst:"entirety",ise_unite:"1",extra_ability:"multi_dimension"},data:{status:0}}));
+      const bytes=new Uint8Array(pcm.buffer),F=6400;
+      for(let o=0,n=0;o<bytes.length||n===0;o+=F,n++){
+        const last=o+F>=bytes.length;
+        ws.send(JSON.stringify({business:{cmd:"auw",aus:n===0?1:last?4:2},data:{status:last?2:1,data:b64bytes(bytes.subarray(o,o+F))}}));
+        if(last)break;await new Promise(r=>setTimeout(r,25));
+      }
+    };
+    ws.onmessage=e=>{
+      let m;try{m=JSON.parse(e.data)}catch(_){return}
+      if(m.code!==0){clearTimeout(timer);return fail(`讯飞返回错误 ${m.code}：${m.message||""}`)}
+      if(m.data&&m.data.status===2&&m.data.data){
+        clearTimeout(timer);done=true;try{ws.close(1000)}catch(_){}
+        const bin=atob(m.data.data),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);
+        resolve(new TextDecoder("utf-8").decode(u));
+      }
+    };
+  });
+}
+function parseXf(xml){
+  const d=new DOMParser().parseFromString(xml,"text/xml");
+  const node=[...d.querySelectorAll("read_chapter,read_sentence,sentence")].find(n=>n.hasAttribute("total_score"));
+  if(!node)return null;
+  const num=a=>{const v=parseFloat(node.getAttribute(a));return isNaN(v)?null:v};
+  let total=num("total_score");const five=total!==null&&total<=5.01&&[...d.querySelectorAll("word")].every(w=>parseFloat(w.getAttribute("total_score")||0)<=5.01);
+  const sc=v=>v===null?null:Math.round(five?v*20:v);
+  const words=[...node.querySelectorAll("word")].filter(w=>{const c=(w.getAttribute("content")||"").toLowerCase();return c&&c!=="sil"&&c!=="fil"&&c!=="silv"})
+    .map(w=>({w:w.getAttribute("content"),score:sc(parseFloat(w.getAttribute("total_score"))),dp:+(w.getAttribute("dp_message")||0)}));
+  return {total:sc(total),acc:sc(num("accuracy_score")),flu:sc(num("fluency_score")),integ:sc(num("integrity_score")),words};
+}
+/* microphone -> 16 kHz 16-bit PCM (what 讯飞 wants); also gives a WAV for "听我的" */
+function pcmTo16k(chunks,rate){
+  let len=0;chunks.forEach(c=>len+=c.length);const all=new Float32Array(len);let o=0;chunks.forEach(c=>{all.set(c,o);o+=c.length});
+  const ratio=rate/16000,n=Math.floor(all.length/ratio),out=new Int16Array(n);
+  for(let i=0;i<n;i++){const a=Math.floor(i*ratio),b=Math.min(all.length,Math.floor((i+1)*ratio));let s=0;for(let k=a;k<b;k++)s+=all[k];const v=Math.max(-1,Math.min(1,s/Math.max(1,b-a)));out[i]=v<0?v*0x8000:v*0x7fff}
+  return out;
+}
+function wavUrl(pcm){const b=new ArrayBuffer(44+pcm.length*2),v=new DataView(b),w=(o,s)=>[...s].forEach((c,i)=>v.setUint8(o+i,c.charCodeAt(0)));
+  w(0,"RIFF");v.setUint32(4,36+pcm.length*2,true);w(8,"WAVE");w(12,"fmt ");v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);v.setUint32(24,16000,true);v.setUint32(28,32000,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,"data");v.setUint32(40,pcm.length*2,true);
+  new Int16Array(b,44).set(pcm);return URL.createObjectURL(new Blob([b],{type:"audio/wav"}))}
+async function startRecXf(){
+  const q=quiz,it=q.items[q.i];stopAudio();unlockAudio();
+  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}
+  catch(e){q.rec={status:"err",msg:"没有拿到麦克风权限。请在弹窗里点「允许」，或者到手机设置里允许这个浏览器使用麦克风。"};render();return}
+  const src=actx.createMediaStreamSource(stream),proc=actx.createScriptProcessor(4096,1,1),chunks=[],mute=actx.createGain();mute.gain.value=0;
+  proc.onaudioprocess=e=>chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  src.connect(proc);proc.connect(mute);mute.connect(actx.destination);
+  const st={q,idx:q.i,xf:true,stream,src,proc,chunks,rate:actx.sampleRate,timer:0};recState=st;
+  const words=String(it[0]).split(/\s+/).length;st.timer=setTimeout(()=>stopRec(),Math.min(15000,3000+words*1000));
+  q.rec={status:"rec"};render();
+}
+async function stopRecXf(st){
+  clearTimeout(st.timer);try{st.proc.disconnect();st.src.disconnect()}catch(e){}st.stream.getTracks().forEach(t=>t.stop());if(recState===st)recState=null;
+  const q=st.q;const pcm=pcmTo16k(st.chunks,st.rate);const url=wavUrl(pcm);
+  if(quiz!==q||q.i!==st.idx)return;
+  if(pcm.length<16000*0.4){q.rec={status:"done",url,msg:"录得太短了，读完整句再点结束。"};render();return}
+  q.rec={status:"scoring",url};render();
+  try{const xml=await xfScore(String(q.items[st.idx][0]).trim(),pcm);const r=parseXf(xml);
+    if(quiz!==q||q.i!==st.idx)return;
+    if(!r){q.rec={status:"done",url,msg:"讯飞没有给出分数，再读一次试试。"};render();return}
+    q.rec={status:"done",url,xf:r};chime(r.total>=80);render();
+  }catch(e){if(quiz!==q||q.i!==st.idx)return;q.rec={status:"done",url,msg:e.message||"打分失败"};render()}
+}
+
 /* ---------- phonics (自然拼读) ---------- */
 /* say = how the browser voice approximates the letter's sound; vowels and x are taught through example words instead */
 const PH=[
@@ -702,7 +893,7 @@ function sayCurrent(delay,slow){
   if(q.kind==="listen"||q.kind==="cards"||q.kind==="spell"){const it=q.items[at];setTimeout(()=>{if(live())speak(it[0],q.subj==="yuwen"?"zh-CN":"en-US",slow)},delay||0)}
 }
 function nextQ(){
-  quiz.i++;quiz.input="";quiz.locked=false;quiz.mark="";quiz.picked=-1;quiz.strokes=[];quiz.phase="write";quiz.tried=false;quiz.hint=false;quiz.note="";quiz.read="";quiz.tip="";quiz.lst=[];quiz.undo=[];quiz.res=null;
+  quiz.i++;quiz.input="";quiz.locked=false;quiz.mark="";quiz.picked=-1;quiz.strokes=[];quiz.phase="write";quiz.tried=false;quiz.hint=false;quiz.note="";quiz.read="";quiz.tip="";quiz.lst=[];quiz.undo=[];quiz.res=null;quiz.rec=null;if(recState){try{recState.mr.state==="recording"&&recState.mr.stop();recState.sr&&recState.sr.abort()}catch(e){}recState=null}
   if(quiz.i>=quiz.items.length){const st=Math.max(1,Math.round(quiz.score/quiz.items.length*3));addStars(quiz.score);view={name:"done",stars:st};render();return}
   if(quiz.kind==="listen")quiz.opts=buildOptions(quiz.items[quiz.i],quiz.pool);
   if(quiz.kind==="phq")quiz.opts=phOpts(quiz.items[quiz.i]);
@@ -778,8 +969,8 @@ quiz(){
   }else if(q.kind==="cards"){
     const yu=q.subj==="yuwen";
     h+=`<div class="stage">`+(yu?`<div class="py ${q.showPy?"":"hide"}">${esc(it[1]||"")}</div><div class="tzg"><span>${esc(it[0])}</span></div>`
-        :`${pic(it[1],"big")}<div class="word${it[0].length>12?" long":""}">${esc(it[0])}</div><div class="cn">${esc(it[2]||"")}</div>`)+
-      `<div class="btns" style="justify-content:center">${hasTTS?`<button class="say" data-act="say">${SPK}读一读</button>`:""}${yu?`<button class="say" data-act="py">${q.showPy?"遮住拼音":"显示拼音"}</button>`:""}</div></div>
+        :`${pic(it[1],"big")}<div class="word${it[0].length>12?" long":""}">${q.sent?sentHTML(q,it):esc(it[0])}</div><div class="cn">${esc(it[2]||"")}</div>`)+
+      `<div class="btns" style="justify-content:center">${hasTTS?`<button class="say" data-act="say">${SPK}读一读</button>`:""}${yu?`<button class="say" data-act="py">${q.showPy?"遮住拼音":"显示拼音"}</button>`:""}</div>${q.sent?recHTML(q,it):""}</div>
       <div class="btns"><button class="btn bad" data-act="card" data-arg="0">再练练</button><button class="btn good" data-act="card" data-arg="1">${q.sent?"会说了 ✓":"认识 ✓"}</button></div>`;
   }else if(q.kind==="spell"&&spellCfg.mode==="offline"){
     const ph=q.phase,w=it[0],res=q.res,show=q.hint||ph!=="write";
@@ -899,6 +1090,12 @@ parent(){
    <div class="btns"><button class="btn" data-act="save">保存</button>
    <button class="btn ghost" data-act="reset">${view.confirmReset?"确定恢复默认？再点一次":"恢复默认内容"}</button></div>
    <button class="btn ghost" data-act="clearwrong">${view.confirmClear?"确定清空？再点一次":"清空错题本"}</button>
+   <div class="field"><label>讯飞口语评测（句子跟读打分）</label>
+     <span class="small muted">${inClaude?"在 Claude 里打开时用不了，要用手机 Safari 打开 GitHub 上的网址。":xfReady()?"已设置。句子跟读录音后由讯飞打分。":"没设置时，用手机自带的语音识别粗略判断。"} 钥匙只保存在这台设备的浏览器里，不会出现在网址或文件里。</span>
+     <input id="xf-appid" class="tin" placeholder="APPID" autocomplete="off" value="${esc(xfCfg.appid)}">
+     <input id="xf-key" class="tin" placeholder="APIKey" autocomplete="off" value="${esc(xfCfg.key)}">
+     <input id="xf-secret" class="tin" placeholder="APISecret" autocomplete="off" type="password" value="${esc(xfCfg.secret)}">
+     <div class="btns"><button class="btn ghost" data-act="xfsave">保存讯飞设置</button>${xfCfg.appid?`<button class="btn ghost" data-act="xfclear">清除</button>`:""}</div></div>
    <p class="small muted" style="margin:0">自然拼读的字母读音：Phonics sounds: Phonicademy (phonicademy.com)</p>
    <p class="small muted" style="margin:0">内容和进度存在这台设备的浏览器里。换设备或清理浏览器数据会丢失，可以把上面两个框的文字复制下来留个备份。</p>`;
 }
@@ -998,6 +1195,11 @@ const A={
   card(v){const q=quiz,it=q.items[q.i];if(v==="1"){q.score++;if(q.review)delWrong(q.subj,it)}else addWrong(q.subj,it);nextQ()},
   py(){quiz.showPy=!quiz.showPy;render()},
   say(){sayCurrent(0,true)},
+  recstart(){startRec()},
+  xfsave(){xfCfg={appid:document.getElementById("xf-appid").value.trim(),key:document.getElementById("xf-key").value.trim(),secret:document.getElementById("xf-secret").value.trim()};S.set("xsb-xf",xfCfg);render();toast(xfReady()?"已保存，去句子跟读试试":"已保存")},
+  xfclear(){xfCfg={appid:"",key:"",secret:""};S.set("xsb-xf",xfCfg);render();toast("已清除")},
+  recstop(){stopRec()},
+  recplay(){const r=quiz&&quiz.rec;if(!r||!r.url)return;stopAudio();try{AUD.onended=null;AUD.src=r.url;AUD.play().catch(()=>{})}catch(e){}},
   phq(){startQuiz("phonics","phq",phQuizItems())},
   pword(){const {subj,idx}=view;view={name:"pword",subj,idx,i:0,joined:false,seen:[0],starred:false};render();pwAuto()},
   pwgo(n){n=+n;const list=pwList(view.subj,view.idx);if(n<0)return;
