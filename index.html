@@ -719,20 +719,39 @@ async function startRecXf(){
   micMode(true);
   let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true})}
   catch(e){micMode(false);q.rec={status:"err",msg:micErr(e)};render();return}
-  if(actx&&actx.state==="suspended"){try{await actx.resume()}catch(e){}}
-  const src=actx.createMediaStreamSource(stream),proc=actx.createScriptProcessor(4096,1,1),chunks=[],mute=actx.createGain();mute.gain.value=0;
-  proc.onaudioprocess=e=>chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-  src.connect(proc);proc.connect(mute);mute.connect(actx.destination);
-  const st={q,idx:q.i,xf:true,stream,src,proc,chunks,rate:actx.sampleRate,timer:0};recState=st;
+  /* record with the phone's own recorder (survives the audio-mode switch), convert afterwards */
+  let mr;try{mr=new MediaRecorder(stream)}catch(e){stream.getTracks().forEach(t=>t.stop());micMode(false);q.rec={status:"err",msg:"这个浏览器不能录音。"};render();return}
+  const chunks=[],st={q,idx:q.i,xf:true,stream,mr,chunks,t0:Date.now(),timer:0};recState=st;
+  mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
+  mr.onstop=()=>finishRecXf(st);
+  mr.start(250);
   const words=String(it[0]).split(/\s+/).length;st.timer=setTimeout(()=>stopRec(),Math.min(15000,3000+words*1000));
   q.rec={status:"rec"};render();
 }
-async function stopRecXf(st){
-  clearTimeout(st.timer);try{st.proc.disconnect();st.src.disconnect()}catch(e){}st.stream.getTracks().forEach(t=>t.stop());if(recState===st)recState=null;micMode(false);
-  const q=st.q;const pcm=pcmTo16k(st.chunks,st.rate);const url=wavUrl(pcm);
+function stopRecXf(st){clearTimeout(st.timer);try{st.mr.state!=="inactive"?st.mr.stop():finishRecXf(st)}catch(e){finishRecXf(st)}}
+function decodeAny(ctx,ab){return new Promise((res,rej)=>{try{const p=ctx.decodeAudioData(ab,res,rej);if(p&&p.then)p.then(res,rej)}catch(e){rej(e)}})}
+async function blobTo16k(blob){
+  const ab=await blob.arrayBuffer();
+  const Ctx=window.AudioContext||window.webkitAudioContext,tmp=actx||new Ctx();
+  const buf=await decodeAny(tmp,ab);
+  const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
+  let data;
+  if(OAC){const len=Math.max(1,Math.ceil(buf.duration*16000)),off=new OAC(1,len,16000),src=off.createBufferSource();src.buffer=buf;src.connect(off.destination);src.start(0);
+    const out=await new Promise((res,rej)=>{off.oncomplete=e=>res(e.renderedBuffer);const r=off.startRendering();if(r&&r.then)r.then(res,rej)});data=out.getChannelData(0)}
+  else return pcmTo16k([buf.getChannelData(0)],buf.sampleRate);
+  const pcm=new Int16Array(data.length);for(let i=0;i<data.length;i++){const v=Math.max(-1,Math.min(1,data[i]));pcm[i]=v<0?v*0x8000:v*0x7fff}
+  return pcm;
+}
+async function finishRecXf(st){
+  if(st.finished)return;st.finished=true;
+  st.stream.getTracks().forEach(t=>t.stop());if(recState===st)recState=null;micMode(false);
+  const q=st.q;if(quiz!==q||q.i!==st.idx)return;
+  const blob=new Blob(st.chunks,{type:st.mr.mimeType||"audio/mp4"}),url=st.chunks.length?URL.createObjectURL(blob):"";
+  if(!st.chunks.length){q.rec={status:"done",url,msg:"没有录到声音，再试一次。"};render();return}
+  q.rec={status:"scoring",url};render();
+  let pcm;try{pcm=await blobTo16k(blob)}catch(e){if(quiz===q&&q.i===st.idx){q.rec={status:"done",url,msg:"录音转换失败："+(e&&e.message||e)};render()}return}
   if(quiz!==q||q.i!==st.idx)return;
   if(pcm.length<16000*0.4){q.rec={status:"done",url,msg:"录得太短了，读完整句再点结束。"};render();return}
-  q.rec={status:"scoring",url};render();
   try{const xml=await xfScore(String(q.items[st.idx][0]).trim(),pcm);const r=parseXf(xml);
     if(quiz!==q||q.i!==st.idx)return;
     if(!r){q.rec={status:"done",url,msg:"讯飞没有给出分数，再读一次试试。"};render();return}
@@ -904,7 +923,7 @@ function sayCurrent(delay,slow){
   if(q.kind==="listen"||q.kind==="cards"||q.kind==="spell"){const it=q.items[at];setTimeout(()=>{if(live())speak(it[0],q.subj==="yuwen"?"zh-CN":"en-US",slow)},delay||0)}
 }
 function nextQ(){
-  quiz.i++;quiz.input="";quiz.locked=false;quiz.mark="";quiz.picked=-1;quiz.strokes=[];quiz.phase="write";quiz.tried=false;quiz.hint=false;quiz.note="";quiz.read="";quiz.tip="";quiz.lst=[];quiz.undo=[];quiz.res=null;quiz.rec=null;if(recState){try{recState.mr.state==="recording"&&recState.mr.stop();recState.sr&&recState.sr.abort()}catch(e){}recState=null}
+  quiz.i++;quiz.input="";quiz.locked=false;quiz.mark="";quiz.picked=-1;quiz.strokes=[];quiz.phase="write";quiz.tried=false;quiz.hint=false;quiz.note="";quiz.read="";quiz.tip="";quiz.lst=[];quiz.undo=[];quiz.res=null;quiz.rec=null;if(recState){try{recState.mr&&recState.mr.state==="recording"&&recState.mr.stop();recState.sr&&recState.sr.abort();recState.stream&&recState.stream.getTracks().forEach(t=>t.stop())}catch(e){}recState=null;micMode(false)}
   if(quiz.i>=quiz.items.length){const st=Math.max(1,Math.round(quiz.score/quiz.items.length*3));addStars(quiz.score);view={name:"done",stars:st};render();return}
   if(quiz.kind==="listen")quiz.opts=buildOptions(quiz.items[quiz.i],quiz.pool);
   if(quiz.kind==="phq")quiz.opts=phOpts(quiz.items[quiz.i]);
