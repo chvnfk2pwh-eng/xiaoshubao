@@ -527,9 +527,15 @@ let clipBuf={},audioQ=0,curSrc=null;
 /* recordings play through an <audio> element: on iPhone it still plays when the ring/silent switch is on silent, Web Audio does not */
 const SILENT="data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYwLjE2LjEwMAAAAAAAAAAAAAAA//NwwAAAAAAAAAAAAEluZm8AAAAPAAAABgAAAykAWlpaWlpaWlpaWlpaWlpaWnt7e3t7e3t7e3t7e3t7e3t7nJycnJycnJycnJycnJycnL29vb29vb29vb29vb29vb293t7e3t7e3t7e3t7e3t7e3t7/////////////////////AAAAAExhdmM2MC4zMQAAAAAAAAAAAAAAACQEUQAAAAAAAAMpso/G6AAAAAAAAAAAAAAAAAD/80DEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQsRbAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQMSkAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NCxKMAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NAxKQAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/80LEowAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU=";
 const AUD=new Audio();AUD.preload="auto";try{AUD.setAttribute("playsinline","");AUD.setAttribute("webkit-playsinline","")}catch(e){}
-let audUnlocked=false;
+let audUnlocked=false,micBusy=false;
+function micMode(on){micBusy=on;try{if(navigator.audioSession)navigator.audioSession.type=on?"play-and-record":"playback"}catch(e){}}
+const micErr=e=>{const n=e&&e.name||"";
+  if(n==="NotAllowedError"||n==="SecurityError")return "麦克风被拒绝了。点地址栏左边的「大小」图标 → 网站设置 → 麦克风，改成「询问」或「允许」，然后刷新页面再试。（"+n+"）";
+  if(n==="NotFoundError")return "没有找到麦克风。（"+n+"）";
+  if(n==="NotReadableError")return "麦克风正在被别的程序使用，关掉其他录音或通话再试。（"+n+"）";
+  return "打开麦克风失败："+(n||"")+" "+(e&&e.message||"");};
 function unlockAudio(){
-  try{if(navigator.audioSession)navigator.audioSession.type="playback"}catch(e){}
+  try{if(navigator.audioSession&&!recState&&!micBusy)navigator.audioSession.type="playback"}catch(e){}
   try{actx=actx||new (window.AudioContext||window.webkitAudioContext)();if(actx.state==="suspended")actx.resume()}catch(e){}
   if(!audUnlocked){audUnlocked=true;try{AUD.src=SILENT;const pr=AUD.play();if(pr&&pr.catch)pr.catch(()=>{audUnlocked=false})}catch(e){audUnlocked=false}}
 }
@@ -593,14 +599,14 @@ async function startRec(){
   if(xfReady()&&window.AudioContext||xfReady()&&window.webkitAudioContext){unlockAudio();if(actx&&canRec())return startRecXf()}
   const q=quiz,it=q.items[q.i];stopAudio();
   if(!canRec()){q.rec={status:"err",msg:"这个浏览器不能录音。请用手机自带的 Safari 打开网址再试。"};render();return}
-  let stream;
+  let stream;micMode(true);
   try{stream=await navigator.mediaDevices.getUserMedia({audio:true})}
-  catch(e){q.rec={status:"err",msg:inClaude?"在 Claude 里打开时不能录音，请用手机 Safari 打开 GitHub 上的网址使用。":"没有拿到麦克风权限。请在弹窗里点「允许」，或者到手机设置里允许这个浏览器使用麦克风。"};render();return}
+  catch(e){micMode(false);q.rec={status:"err",msg:inClaude?"在 Claude 里打开时不能录音，请用手机 Safari 打开 GitHub 上的网址使用。":micErr(e)};render();return}
   const chunks=[];let mr;
   try{mr=new MediaRecorder(stream)}catch(e){stream.getTracks().forEach(t=>t.stop());q.rec={status:"err",msg:"这个浏览器不能录音。"};render();return}
   const st={q,idx:q.i,mr,stream,heard:[],srDone:!SR,mrDone:false,sr:null,timer:0};recState=st;
   mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
-  mr.onstop=()=>{stream.getTracks().forEach(t=>t.stop());st.url=chunks.length?URL.createObjectURL(new Blob(chunks,{type:mr.mimeType||"audio/mp4"})):"";st.mrDone=true;finishRec(st)};
+  mr.onstop=()=>{stream.getTracks().forEach(t=>t.stop());micMode(false);st.url=chunks.length?URL.createObjectURL(new Blob(chunks,{type:mr.mimeType||"audio/mp4"})):"";st.mrDone=true;finishRec(st)};
   if(SR){try{const r=new SR();st.sr=r;r.lang="en-US";r.interimResults=false;r.maxAlternatives=3;r.continuous=false;
     r.onresult=e=>{for(const res of e.results)for(let k=0;k<res.length;k++)st.heard.push(res[k].transcript)};
     r.onerror=()=>{};r.onend=()=>{st.srDone=true;if(mr.state==="recording")setTimeout(()=>{try{mr.state==="recording"&&mr.stop()}catch(e){}},300);finishRec(st)};
@@ -710,8 +716,10 @@ function wavUrl(pcm){const b=new ArrayBuffer(44+pcm.length*2),v=new DataView(b),
   new Int16Array(b,44).set(pcm);return URL.createObjectURL(new Blob([b],{type:"audio/wav"}))}
 async function startRecXf(){
   const q=quiz,it=q.items[q.i];stopAudio();unlockAudio();
-  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}
-  catch(e){q.rec={status:"err",msg:"没有拿到麦克风权限。请在弹窗里点「允许」，或者到手机设置里允许这个浏览器使用麦克风。"};render();return}
+  micMode(true);
+  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true})}
+  catch(e){micMode(false);q.rec={status:"err",msg:micErr(e)};render();return}
+  if(actx&&actx.state==="suspended"){try{await actx.resume()}catch(e){}}
   const src=actx.createMediaStreamSource(stream),proc=actx.createScriptProcessor(4096,1,1),chunks=[],mute=actx.createGain();mute.gain.value=0;
   proc.onaudioprocess=e=>chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
   src.connect(proc);proc.connect(mute);mute.connect(actx.destination);
@@ -720,7 +728,7 @@ async function startRecXf(){
   q.rec={status:"rec"};render();
 }
 async function stopRecXf(st){
-  clearTimeout(st.timer);try{st.proc.disconnect();st.src.disconnect()}catch(e){}st.stream.getTracks().forEach(t=>t.stop());if(recState===st)recState=null;
+  clearTimeout(st.timer);try{st.proc.disconnect();st.src.disconnect()}catch(e){}st.stream.getTracks().forEach(t=>t.stop());if(recState===st)recState=null;micMode(false);
   const q=st.q;const pcm=pcmTo16k(st.chunks,st.rate);const url=wavUrl(pcm);
   if(quiz!==q||q.i!==st.idx)return;
   if(pcm.length<16000*0.4){q.rec={status:"done",url,msg:"录得太短了，读完整句再点结束。"};render();return}
