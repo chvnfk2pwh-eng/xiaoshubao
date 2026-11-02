@@ -646,7 +646,10 @@ const sentHTML=(q,it)=>{const r=q.rec;
 
 
 /* ---------- iFlytek (讯飞) pronunciation scoring: keys live only in this device's browser ---------- */
-let xfCfg=(()=>{try{return JSON.parse(localStorage.getItem("xsb-xf"))||{appid:"",key:"",secret:""}}catch(e){return {appid:"",key:"",secret:""}}})();
+const XF_BUILTIN={"appid": "3e5a59de", "key": "e429066c04ecc95e6ad4d17a964ac480", "secret": "YjI2ZGMxMmY0MWFmNDc1ZDJjZmZmNDk0"};
+let xfCfg=(()=>{let st=null;try{st=JSON.parse(localStorage.getItem("xsb-xf"))}catch(e){}
+  if(st&&st.appid&&st.key&&st.secret)return st;
+  return XF_BUILTIN?{...XF_BUILTIN,builtin:true}:{appid:"",key:"",secret:""}})();
 const xfReady=()=>!inClaude&&xfCfg.appid&&xfCfg.key&&xfCfg.secret&&window.crypto&&crypto.subtle&&window.WebSocket;
 async function xfUrl(){
   const host="ise-api.xfyun.cn",path="/v2/open-ise",date=new Date().toUTCString();
@@ -1091,11 +1094,11 @@ parent(){
    <button class="btn ghost" data-act="reset">${view.confirmReset?"确定恢复默认？再点一次":"恢复默认内容"}</button></div>
    <button class="btn ghost" data-act="clearwrong">${view.confirmClear?"确定清空？再点一次":"清空错题本"}</button>
    <div class="field"><label>讯飞口语评测（句子跟读打分）</label>
-     <span class="small muted">${inClaude?"在 Claude 里打开时用不了，要用手机 Safari 打开 GitHub 上的网址。":xfReady()?"已设置。句子跟读录音后由讯飞打分。":"没设置时，用手机自带的语音识别粗略判断。"} 钥匙只保存在这台设备的浏览器里，不会出现在网址或文件里。</span>
-     <input id="xf-appid" class="tin" placeholder="APPID" autocomplete="off" value="${esc(xfCfg.appid)}">
-     <input id="xf-key" class="tin" placeholder="APIKey" autocomplete="off" value="${esc(xfCfg.key)}">
-     <input id="xf-secret" class="tin" placeholder="APISecret" autocomplete="off" type="password" value="${esc(xfCfg.secret)}">
-     <div class="btns"><button class="btn ghost" data-act="xfsave">保存讯飞设置</button>${xfCfg.appid?`<button class="btn ghost" data-act="xfclear">清除</button>`:""}</div></div>
+     <span class="small muted">${inClaude?"在 Claude 里打开时用不了，要用手机 Safari 打开 GitHub 上的网址。":xfCfg.builtin?"软件里已经带了钥匙，不用填。想换成别的钥匙，再填下面三项。":xfReady()?"已设置。句子跟读录音后由讯飞打分。":"没设置时，用手机自带的语音识别粗略判断。"} 钥匙只保存在这台设备的浏览器里，不会出现在网址或文件里。</span>
+     <input id="xf-appid" class="tin" placeholder="APPID" autocomplete="off" value="${xfCfg.builtin?"":esc(xfCfg.appid)}">
+     <input id="xf-key" class="tin" placeholder="APIKey" autocomplete="off" value="${xfCfg.builtin?"":esc(xfCfg.key)}">
+     <input id="xf-secret" class="tin" placeholder="APISecret" autocomplete="off" type="password" value="${xfCfg.builtin?"":esc(xfCfg.secret)}">
+     <div class="btns"><button class="btn ghost" data-act="xfsave">保存讯飞设置</button>${xfCfg.appid&&!xfCfg.builtin?`<button class="btn ghost" data-act="xfclear">清除</button>`:""}</div></div>
    <p class="small muted" style="margin:0">自然拼读的字母读音：Phonics sounds: Phonicademy (phonicademy.com)</p>
    <p class="small muted" style="margin:0">内容和进度存在这台设备的浏览器里。换设备或清理浏览器数据会丢失，可以把上面两个框的文字复制下来留个备份。</p>`;
 }
@@ -1196,8 +1199,9 @@ const A={
   py(){quiz.showPy=!quiz.showPy;render()},
   say(){sayCurrent(0,true)},
   recstart(){startRec()},
-  xfsave(){xfCfg={appid:document.getElementById("xf-appid").value.trim(),key:document.getElementById("xf-key").value.trim(),secret:document.getElementById("xf-secret").value.trim()};S.set("xsb-xf",xfCfg);render();toast(xfReady()?"已保存，去句子跟读试试":"已保存")},
-  xfclear(){xfCfg={appid:"",key:"",secret:""};S.set("xsb-xf",xfCfg);render();toast("已清除")},
+  xfsave(){const ap=document.getElementById("xf-appid").value.trim();if(!ap&&XF_BUILTIN){localStorage.removeItem&&S.set("xsb-xf",{});xfCfg={...XF_BUILTIN,builtin:true};render();toast("使用软件自带的钥匙");return}
+    xfCfg={appid:document.getElementById("xf-appid").value.trim(),key:document.getElementById("xf-key").value.trim(),secret:document.getElementById("xf-secret").value.trim()};S.set("xsb-xf",xfCfg);render();toast(xfReady()?"已保存，去句子跟读试试":"已保存")},
+  xfclear(){xfCfg=XF_BUILTIN?{...XF_BUILTIN,builtin:true}:{appid:"",key:"",secret:""};S.set("xsb-xf",xfCfg);render();toast("已清除")},
   recstop(){stopRec()},
   recplay(){const r=quiz&&quiz.rec;if(!r||!r.url)return;stopAudio();try{AUD.onended=null;AUD.src=r.url;AUD.play().catch(()=>{})}catch(e){}},
   phq(){startQuiz("phonics","phq",phQuizItems())},
