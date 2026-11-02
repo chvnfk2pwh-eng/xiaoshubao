@@ -427,18 +427,41 @@ const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"
 const rnd=(a,b)=>a+Math.floor(Math.random()*(b-a+1));
 const shuffle=a=>{a=a.slice();for(let i=a.length-1;i>0;i--){const j=rnd(0,i);[a[i],a[j]]=[a[j],a[i]]}return a};
 const hasTTS="speechSynthesis" in window;
+/* how some entries should sound: a lone "I" is read as the Roman numeral "one" by some voices; Chinese names sound better in Chinese */
+const SAY={"I":"eye","a(n)":"a, an"};
+const NAMES={Taotao:"淘淘",Duoduo:"多多",Xiaoyun:"晓云",Feifei:"菲菲"};
+let voicePick={};
+function pickVoice(lg){
+  if(voicePick[lg]!==undefined)return voicePick[lg];
+  let vs=[];try{vs=speechSynthesis.getVoices()}catch(e){}
+  if(!vs.length)return null;
+  const norm=v=>(v.lang||"").replace("_","-").toLowerCase();
+  const want=lg==="zh-CN"?["zh-cn","zh-hans","zh"]:["en-us","en-gb","en"];
+  let best=null;
+  for(const w of want){const c=vs.filter(v=>norm(v).startsWith(w));if(c.length){
+    best=c.find(v=>/premium|enhanced|natural|neural|高/i.test(v.name))||c.find(v=>/samantha|ava|allison|zoe|google us|aria|jenny|ting-ting|tingting|yaoyao|xiaoxiao/i.test(v.name))||c.find(v=>v.localService)||c[0];break}}
+  voicePick[lg]=best;return best;
+}
+try{speechSynthesis.onvoiceschanged=()=>{voicePick={}}}catch(e){}
+function enParts(t){
+  t=t.trim();if(SAY[t])return [[SAY[t],"en-US"]];
+  const re=new RegExp("\\b("+Object.keys(NAMES).join("|")+")\\b","g"),out=[];let last=0,m;
+  while((m=re.exec(t))){if(m.index>last)out.push([t.slice(last,m.index),"en-US"]);out.push([NAMES[m[1]],"zh-CN"]);last=m.index+m[0].length}
+  if(last<t.length)out.push([t.slice(last),"en-US"]);
+  return out.filter(p=>/[A-Za-z\u4e00-\u9fff]/.test(p[0]));
+}
 function speak(text,lang,slow){
   if(!hasTTS)return;
   let parts=[[String(text),lang]];
   if(lang!=="zh-CN"){
     /* "let's = let us" / "bye (= goodbye)" -> "let's，也可以说成 let us" */
-    const m=String(text).match(/^(.+?)\s*\(?\s*=\s*([^)]+?)\s*\)?\s*$/);
-    if(m)parts=[[m[1].trim(),lang],["也可以说成","zh-CN"],[m[2].trim(),lang]];
-    else parts=[[String(text).replace(/\s*\([^)]*\)/g,"").trim(),lang]];
+    const raw=String(text).trim(),m=SAY[raw]?null:raw.match(/^(.+?)\s*\(?\s*=\s*([^)]+?)\s*\)?\s*$/);
+    if(m)parts=[...enParts(m[1]),["也可以说成","zh-CN"],...enParts(m[2])];
+    else parts=enParts(SAY[raw]?raw:raw.replace(/\s*\([^)]*\)/g,""));
   }
-  try{speechSynthesis.cancel();const vs=speechSynthesis.getVoices();
+  try{speechSynthesis.cancel();
     parts.forEach(([t,lg])=>{const u=new SpeechSynthesisUtterance(t);u.lang=lg;u.rate=lg==="zh-CN"?(slow?0.55:0.75):(slow?0.45:0.6);
-      const v=vs.find(v=>v.lang&&v.lang.replace("_","-").startsWith(lg.slice(0,2)));if(v)u.voice=v;speechSynthesis.speak(u)})}catch(e){}
+      const v=pickVoice(lg);if(v)u.voice=v;speechSynthesis.speak(u)})}catch(e){}
 }
 let actx;
 function chime(ok){
